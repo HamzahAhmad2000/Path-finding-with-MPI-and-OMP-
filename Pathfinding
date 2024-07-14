@@ -1,0 +1,282 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <mpi.h>
+#include <omp.h>
+#include <string.h>
+#include <time.h>
+
+#define INFINITY 99999
+
+
+// Function to initialize distance matrix
+void initialize_distance_matrix(int** distance_matrix,int num_vertices, FILE* file) {
+    char line[256];
+    char vSource[256], Target[256], Weight[256], Type[256];
+
+    // Skip the first line (header)
+    fgets(line, sizeof(line), file);
+
+    // Read data line by line
+    while (fgets(line, sizeof(line), file) != NULL) {
+        // Parse the line
+        sscanf(line, "%s %s %s %s", vSource, Target, Weight, Type);
+        
+        // Convert vSource and Target to vertex indices (assuming alphabetical order)
+        int u = vSource[0] - 'A';
+        int v = Target[0] - 'A';
+
+        // Convert Weight to an integer
+        int weight = atoi(Weight);
+
+        // Update the distance matrix
+        distance_matrix[u][v] = weight;
+        distance_matrix[v][u] = weight; // Assuming undirected graph
+    }
+}
+
+
+// Function to compute shortest paths using Dijkstra's algorithm
+void dijkstra(int** graph, int num_vertices, int source, int* distances) {
+    int* visited = (int*)malloc(num_vertices * sizeof(int));
+    for (int i = 0; i < num_vertices; i++) {
+        distances[i] = INFINITY;
+        visited[i] = 0;
+    }
+    distances[source] = 0;
+
+    for (int count = 0; count < num_vertices - 1; count++) {
+        int min_distance = INFINITY;
+        int min_index;
+
+        // Find the vertex with the minimum distance
+        #pragma omp parallel for shared(min_distance, min_index)
+        for (int v = 0; v < num_vertices; v++) {
+            if (!visited[v] && distances[v] <= min_distance) {
+                min_distance = distances[v];
+                min_index = v;
+            }
+        }
+
+        int u = min_index;
+        visited[u] = 1;
+
+        // Update distances
+        #pragma omp parallel for
+        for (int v = 0; v < num_vertices; v++) {
+            if (!visited[v] && graph[u][v] && distances[u] != INFINITY &&
+                distances[u] + graph[u][v] < distances[v]) {
+                distances[v] = distances[u] + graph[u][v];
+            }
+        }
+    }
+
+    free(visited);
+}
+
+// Function to print the K shortest paths
+void print_k_shortest_paths(int** shortest_paths, int num_paths, int k) {
+    printf("K shortest paths:\n");
+
+    // If num_paths is greater than 10, shuffle the indices and select the first 10
+    if (num_paths > 10) {
+        int indices[num_paths];
+        for (int i = 0; i < num_paths; i++) {
+            indices[i] = i;
+        }
+
+        // Shuffle the indices using Fisher-Yates algorithm
+        srand(time(NULL));
+        for (int i = num_paths - 1; i > 0; i--) {
+            int j = rand() % (i + 1);
+            int temp = indices[i];
+            indices[i] = indices[j];
+            indices[j] = temp;
+        }
+
+        // Print the first 10 shuffled paths
+        for (int i = 0; i < k; i++) {
+            printf("Path %d: ", i + 1);
+            for (int j = 0; j < num_paths; j++) {
+                if (j < 10) {
+                    printf("%d ", shortest_paths[i][indices[j]]);
+                } else {
+                    break;
+                }
+            }
+            printf("\n");
+        }
+    } else {
+        // Print all paths if num_paths is 10 or fewer
+        for (int i = 0; i < k; i++) {
+            printf("Path %d: ", i + 1);
+            for (int j = 0; j < num_paths; j++) {
+                printf("%d ", shortest_paths[i][j]);
+            }
+            printf("\n");
+        }
+    }
+}
+int main(int argc, char *argv[]) {
+    int rank, size;
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    if (argc < 2) {
+        if (rank == 0) {
+            printf("Usage: %s <filename>\n", argv[0]);
+        }
+        MPI_Finalize();
+        exit(1);
+    }
+
+    char* filename = argv[1];
+    
+    	// Read data from file
+	FILE *file = fopen(filename, "r");
+	if (!file) {
+	    if (rank == 0) {
+		printf("Error opening file.\n");
+	    }
+	    MPI_Finalize();
+	    exit(1);
+	}
+
+	#define MAX_VERTICES 10000
+	int num_vertices = 0;
+	int num_edges = 0;
+	char source[100], target[100];
+	int weight;
+	 char vertices[MAX_VERTICES][100];
+	 
+	 
+	while (fscanf(file, "%s %s %d ", source, target, &weight) != EOF) {
+	    num_edges++;
+	    // Check if source vertex is not in the array and add it
+	    int found_source = 0;
+	    for (int i = 0; i < num_vertices; i++) {
+		if (strcmp(vertices[i], source) == 0) {
+		    found_source = 1;
+		    break;
+		}
+	    }
+	    if (!found_source) {
+		strcpy(vertices[num_vertices], source);
+		num_vertices++;
+	    }
+
+	    // Check if target vertex is not in the array and add it
+	    int found_target = 0;
+	    for (int i = 0; i < num_vertices; i++) {
+		if (strcmp(vertices[i], target) == 0) {
+		    found_target = 1;
+		    break;
+		}
+	    }
+	    if (!found_target) {
+		strcpy(vertices[num_vertices], target);
+		num_vertices++;
+	    }
+	}
+
+	/*while (fscanf(file, "%s %s %d ", source, target, &weight) != EOF) {
+	    num_edges++;
+	    // Increment num_vertices for each unique source and target
+	        int found = 0;
+		for (int i = 0; i < num_vertices; i++) {
+		    if (strcmp(vertices[i], source) == 0 || strcmp(vertices[i], target) == 0) {
+		        found = 1;
+		        break;
+		    }
+		}
+		if (!found) {
+		    strcpy(vertices[num_vertices], source);
+		    num_vertices++;
+		    strcpy(vertices[num_vertices], target);
+		    num_vertices++;
+		}
+	}*/
+
+	int k = 3; // Default value for k
+
+ 
+
+    if (rank == 0) {
+        printf("Number of vertices: %d\n", num_vertices);
+        printf("Number of edges: %d\n", num_edges);
+        printf("Value of k: %d\n", k);
+    }
+
+    // Allocate memory for distance matrix
+    int** distance_matrix = (int*)malloc(num_vertices * sizeof(int));
+    for (int i = 0; i < num_vertices; i++) {
+        distance_matrix[i] = (int*)malloc(num_vertices * sizeof(int));
+        for (int j = 0; j < num_vertices; j++) {
+            if (i == j) {
+                distance_matrix[i][j] = 0; // Distance of a vertex to itself
+            } else {
+                distance_matrix[i][j] = INFINITY; // Initialize other distances to infinity
+            }
+        }
+    }
+
+    // Initialize distance matrix with graph data
+    initialize_distance_matrix(distance_matrix, num_vertices, file);
+
+    // Close the file
+    fclose(file);
+
+    if (rank == 0) {
+        printf("Distance matrix initialized\n");
+    }
+
+    // Allocate memory for storing shortest paths
+    int** shortest_paths = (int*)malloc(k * sizeof(int));
+    for (int i = 0; i < k; i++) {
+        shortest_paths[i] = (int*)malloc(num_vertices * sizeof(int));
+    }
+
+    // Compute shortest paths using Dijkstra's algorithm
+    int* distances = (int*)malloc(num_vertices * sizeof(int));
+    for (int i = 0; i < num_vertices; i++) {
+        if (i % size == rank) {
+            dijkstra(distance_matrix, num_vertices, i, distances);
+        }
+        // Synchronize MPI processes
+        MPI_Barrier(MPI_COMM_WORLD);
+        // Gather distances from all processes to rank 0
+        MPI_Gather(distances, num_vertices, MPI_INT, distance_matrix[0], num_vertices, MPI_INT, 0, MPI_COMM_WORLD);
+    }
+
+    if (rank == 0) {
+        printf("Shortest paths computed\n");
+    }
+
+    // Select the K shortest paths
+    if (rank == 0) {
+        // Implement logic to select K shortest paths
+        // For demonstration, let's assume the first K shortest paths are selected
+        for (int i = 0; i < k; i++) {
+            for (int j = 0; j < num_vertices; j++) {
+                shortest_paths[i][j] = distance_matrix[i][j];
+            }
+        }
+        print_k_shortest_paths(shortest_paths, num_vertices, k);
+    }
+
+    // Free memory
+    for (int i = 0; i < num_vertices; i++) {
+        free(distance_matrix[i]);
+    }
+    free(distance_matrix);
+    free(distances);
+
+    // Free memory for shortest_paths
+    for (int i = 0; i < k; i++) {
+        free(shortest_paths[i]);
+    }
+    free(shortest_paths);
+   
+    MPI_Finalize();
+    return 0;
+}
